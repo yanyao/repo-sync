@@ -1,0 +1,106 @@
+- hosts: localhost
+  gather_facts: no
+  vars:
+    dev_nexus_url: http://nexus3-dev-repo.apps.ocp4.stg.io
+    prod_nexus_url: http://nexus3-prod-repo.apps.ocp4.stg.io
+    repository: nmon-detector
+    artifactId: nmon-detector
+    groupId: com.ibm.lbs
+    version: 1.0.0
+    type: jar
+    #http://nexus3-dev-repo.apps.ocp4.stg.io/repository/nmon-detector/com/ibm/lbs/nmon-detector/1.0.0/nmon-detector-1.0.0.jar
+    #http://nexus3-dev-repo.apps.ocp4.stg.io/service/rest/v1/search/assets?repository=nmon-detector&version=1.0.0&maven.extension=jar
+  tasks:
+    - name: get the artifact info from Dev repo
+      ansible.builtin.uri:
+        url: "{{dev_nexus_url}}/service/rest/v1/search/assets?repository={{repository}}&version={{version}}&maven.extension={{type}}"
+        return_content: yes
+        user: admin
+        password: passw0rd
+        method: GET
+        force_basic_auth: yes
+        body_format: json
+      register: artifacts_list
+      failed_when: artifacts_list['json']['items']|length == 0
+
+    - set_fact:
+        group_path: "{{ groupId|replace('.','/') }}"
+
+    - set_fact:
+        path_match: "{{dev_nexus_url}}/repository/{{repository}}/{{group_path}}/{{artifactId}}/{{version}}/"
+        transit_path: "/tmp/repo_transist/{{repository}}/{{group_path}}/{{artifactId}}/{{version}}"
+    
+
+
+    - debug:
+        msg: "{{artifacts_list['json']['items']}}"
+
+    - name: debug
+      debug:
+        msg: "{{ artifacts_list['json']['items']|selectattr('downloadUrl','match',path_match) }}"
+
+    - name: create artifacts dir
+      file:
+        state: directory
+        path: "{{ transit_path }}"
+
+    - name: download all aritifacts to transit path
+      ansible.builtin.get_url:
+        url: "{{ item.downloadUrl }}"
+        username: admin
+        password: passw0rd
+        dest: "{{ transit_path }}"
+        force_basic_auth: yes
+      loop: "{{ artifacts_list['json']['items'] }}"
+       
+      #curl -v -u admin:admin123 -F "maven2.generate-pom=true" -F "maven2.groupId=com.example" -F "maven2.artifactId=commercial-product" -F "maven2.packaging=jar" -F "version=1.0.0" -F "maven2.asset1=@/absolute/path/to/the/local/file/product.jar;type=application/java-archive" -F "maven2.asset1.extension=jar" "http://localhost:8081/service/rest/v1/components?repository=maven-third-party"
+    - name: upload the artifact to Prod repo
+      shell: |
+        curl  -w "*%{http_code}" -u admin:passw0rd -F "maven2.generate-pom=true" -F "maven2.groupId={{groupId}}" -F "maven2.artifactId={{artifactId}}" -F "maven2.packaging=jar" -F "version={{version}}" -F "maven2.asset1=@{{item}};type=application/java-archive" -F "maven2.asset1.extension=jar" '{{prod_nexus_url}}/service/rest/v1/components?repository={{repository}}'
+      register: uploaded_artifacts_list
+      loop: "{{ q('fileglob',transit_path+'/*') }}"
+
+    - name: check return code of uploading artifacts
+      fail:
+        msg: "{{ (item.stdout|split('*'))[0] }}"
+      when: (item.stdout|split('*'))[1]|int != 204
+      loop: "{{ uploaded_artifacts_list.results }}"
+      loop_control:
+        label: "{{ item.stdout }}"
+
+
+
+    - name: upload status
+      debug:
+        msg: "All artifacts has been uploaded to Prod repo"
+
+
+
+
+      #- name: Upload the artifact to Prod repo
+      #  ansible.builtin.uri:
+      #    url: "{{prod_nexus_url}}/service/rest/v1/components?repository={{repository}}"
+      #    user: admin
+      #    password: passw0rd
+      #    method: POST
+      #    force_basic_auth: yes
+      #    body_format: "form-multipart"
+      #    body:
+      #      "maven2.asset1":
+      #        filename: "{{ item }}"
+      #        #mime_type: "application/java-archive"
+      #      "maven2.generate-pom": "true"
+      #      "maven2.groupId": "{{groupId}}"
+      #      "maven2.artifactId": "{{ artifactId}}"
+      #      "maven2.packaging": "jar"
+      #      version: "{{ version }}"
+      #      "maven2.asset1.extension": "jar"
+      #    headers:
+      #      Content-Type: multipart/form-data
+      #    validate_certs: false
+      #  register: uploaded_artifacts_list
+      #  loop: "{{ q('fileglob',transit_path+'/*') }}"
+
+        
+
+
